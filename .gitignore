@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+.next/
+apps/web/out/
+apps/web/.next/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# IDE
+.vscode/
+
+# Scratch/temp files
+scratch/
+
+# Patches
+*.patch
+
+# Embedded repos
+SecureVibechat/
+
+# Utility scripts
+check_keys.js

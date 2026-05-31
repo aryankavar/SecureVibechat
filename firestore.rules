@@ -1,0 +1,176 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // -------------------------------------------------------------------------
+    // Helper Functions
+    // -------------------------------------------------------------------------
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isUser(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isChatParticipant(chatId) {
+      let chat = get(/databases/$(database)/documents/chats/$(chatId));
+      return isAuthenticated() && request.auth.uid in chat.data.participants;
+    }
+
+    function isRateLimited() {
+      // Basic rate limiting: requires clients to space out creates
+      // This is hard to enforce strictly without Cloud Functions tracking previous writes,
+      // but we can enforce timestamp validity.
+      return request.time == request.resource.data.createdAt;
+    }
+    
+    function isValidMessage() {
+      let msg = request.resource.data;
+      return msg.keys().hasAll(['senderId', 'type', 'status', 'createdAt']) &&
+             msg.senderId == request.auth.uid &&
+             (msg.type == 'text' || msg.type == 'image' || msg.type == 'video' || msg.type == 'audio' || msg.type == 'file' || msg.type == 'sticker') &&
+             (msg.keys().hasAll(['content']) || msg.keys().hasAll(['ciphertexts'])) &&
+             msg.status in ['sending', 'sent', 'delivered', 'read'] &&
+             msg.createdAt == request.time;
+    }
+    
+    // System messages are only created by Cloud Functions, so they bypass client rules.
+    // Client-side rule only validates user-sent messages.
+
+    // -------------------------------------------------------------------------
+    // Users Collection
+    // -------------------------------------------------------------------------
+    match /users/{userId} {
+      // Any authenticated user can read public profiles
+      allow read: if isAuthenticated();
+      
+      // Users can only create/update their own profile
+      // Note: publicKey might not be mandatory anymore for new users, but keeping it for backward compatibility.
+      allow create: if isUser(userId) 
+                   && request.resource.data.keys().hasAll(['uid', 'displayName'])
+                   && request.resource.data.uid == userId;
+                   
+      allow update: if isUser(userId)
+                   // Prevent modifying the UID
+                   && request.resource.data.uid == resource.data.uid;
+                   
+      // No deletions allowed directly from client
+      allow delete: if false;
+      
+      // User Settings Subcollection (Strictly private)
+      match /settings/{settingDoc} {
+        allow read, write: if isUser(userId);
+      }
+      
+      // Devices Subcollection (Public keys for multi-device)
+      match /devices/{deviceId} {
+        allow read: if isAuthenticated();
+        allow write: if isUser(userId);
+      }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Chats Collection
+    // -------------------------------------------------------------------------
+    match /chats/{chatId} {
+      // Must be a participant to read the chat metadata
+      allow read: if isAuthenticated() && 
+                 (resource == null || request.auth.uid in resource.data.participants);
+      
+      // Creating a chat requires being a participant
+      allow create: if isAuthenticated() && 
+                   request.auth.uid in request.resource.data.participants;
+      
+      // Updating requires being a participant (e.g. updating unread counts, last message)
+      // Note: In a fully secure setup, ONLY Cloud Functions would update the chat doc,
+      // but allowing participants is okay for client-side denormalization if needed.
+      allow update: if isAuthenticated() && 
+                   request.auth.uid in resource.data.participants;
+                   
+      allow delete: if false; // Chats cannot be deleted, only archived
+      
+      // Messages Subcollection
+      match /messages/{messageId} {
+        // Must be a chat participant to read messages
+        allow read: if isChatParticipant(chatId);
+        
+        // Creating a message
+        allow create: if isChatParticipant(chatId) && isValidMessage();
+        
+        // Updating a message (for read receipts, reactions, or delete flags)
+        allow update: if isChatParticipant(chatId) &&
+                     (
+                       // Sender can update their own message (e.g., delete for everyone within 1 hour)
+                       (resource.data.senderId == request.auth.uid) ||
+                       // Receiver can update status (delivered, read) or reactions
+                       (resource.data.senderId != request.auth.uid)
+                     );
+                     
+        // Messages are never actually deleted, just marked as deleted
+        allow delete: if false;
+      }
+    }
+    
+    // -------------------------------------------------------------------------
+    // Friend Requests Collection
+    // -------------------------------------------------------------------------
+    match /friendRequests/{userId}/incoming/{requestId} {
+      // User can read their own incoming requests
+      allow read: if isUser(userId);
+      
+      // Anyone can CREATE a request for this user
+      allow create: if isAuthenticated() && 
+                   request.resource.data.senderId == request.auth.uid &&
+                   request.resource.data.receiverId == userId;
+                   
+      // Only the receiver can UPDATE or DELETE (accept/reject)
+      allow update, delete: if isUser(userId);
+    }
+    
+    match /friendRequests/{userId}/sent/{requestId} {
+      allow read: if isUser(userId);
+      allow create, delete: if isUser(userId);
+      allow update: if false;
+    }
+    
+    // -------------------------------------------------------------------------
+    // Friends Collection
+    // -------------------------------------------------------------------------
+    match /friends/{userId}/list/{friendId} {
+      allow read: if isUser(userId);
+      // Client-side should ideally NOT write here directly without a Cloud Function,
+      // but if doing batch writes on accept:
+      allow create, delete: if isUser(userId);
+      allow update: if false;
+    }
+    
+    // -------------------------------------------------------------------------
+    // Notifications Collection
+    // -------------------------------------------------------------------------
+    match /notifications/{notificationId} {
+      // Users can only read their own notifications
+      allow read: if isAuthenticated() && resource.data.recipientId == request.auth.uid;
+      
+      // ONLY Cloud Functions should create notifications
+      allow create: if false;
+      
+      // Users can update their own (to mark as read)
+      allow update: if isAuthenticated() && resource.data.recipientId == request.auth.uid;
+      
+      allow delete: if false;
+    }
+    
+    // -------------------------------------------------------------------------
+    // WebRTC Signals (Legacy/Fallback if RTDB is not used)
+    // -------------------------------------------------------------------------
+    match /webrtc-signals/{chatId} {
+      allow read, write: if isChatParticipant(chatId);
+      
+      match /signals/{signalId} {
+        allow read, write: if isChatParticipant(chatId);
+      }
+    }
+  }
+}

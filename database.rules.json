@@ -1,0 +1,25 @@
+{
+  "rules": {
+    "presence": {
+      "$uid": {
+        // Anyone can read presence
+        ".read": "auth != null",
+        // Only the user can write their own presence
+        ".write": "auth != null && auth.uid === $uid",
+        
+        "online": {
+          ".validate": "newData.isBoolean()"
+        },
+        "lastSeen": {
+          ".validate": "newData.isNumber()"
+        },
+        "typing": {
+          "$chatId": {
+             // Basic validation for typing indicator
+             ".validate": "newData.hasChildren(['isTyping', 'timestamp'])"
+          }
+        }
+      }
+    }
+  }
+}

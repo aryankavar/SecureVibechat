@@ -1,0 +1,52 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Shared helper: check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Chat file uploads (images, documents, videos, voice messages)
+    match /chats/{chatId}/files/{fileName} {
+      // Anyone authenticated can read chat files
+      // (Firestore rules handle participant-level access; Storage doesn't have
+      //  direct access to Firestore docs, so we rely on signed URLs or auth)
+      allow read: if isAuthenticated();
+      
+      // Only authenticated users can upload, with size limit
+      allow write: if isAuthenticated()
+                   && request.resource.size < 25 * 1024 * 1024  // 25MB max
+                   && (
+                     request.resource.contentType.matches('image/.*') ||
+                     request.resource.contentType.matches('video/.*') ||
+                     request.resource.contentType.matches('audio/.*') ||
+                     request.resource.contentType.matches('application/pdf') ||
+                     request.resource.contentType.matches('application/msword') ||
+                     request.resource.contentType.matches('application/vnd.openxmlformats-officedocument.*') ||
+                     request.resource.contentType.matches('text/.*')
+                   );
+    }
+
+    // User avatars
+    match /users/{userId}/avatar/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && request.auth.uid == userId
+                   && request.resource.size < 5 * 1024 * 1024  // 5MB max
+                   && request.resource.contentType.matches('image/.*');
+    }
+
+    // Group avatars
+    match /groups/{chatId}/avatar/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+    }
+
+    // Deny everything else
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

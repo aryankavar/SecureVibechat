@@ -1,0 +1,18 @@
+{
+  "name": "securevibechat-monorepo",
+  "version": "2.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build:web": "npm run build --workspace=apps/web",
+    "dev:functions": "npm run serve --workspace=apps/functions",
+    "build:functions": "npm run build --workspace=apps/functions",
+    "deploy:rules": "firebase deploy --only firestore:rules,database:rules",
+    "deploy:functions": "firebase deploy --only functions",
+    "deploy:web": "firebase deploy --only hosting"
+  }
+}

@@ -8,10 +8,11 @@ out/
 apps/web/out/
 apps/web/.next/
 
-# Environment variables
+# Environment variables (secrets — never commit)
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # OS files
 .DS_Store

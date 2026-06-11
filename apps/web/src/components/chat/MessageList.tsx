@@ -2,31 +2,39 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { db } from '@/lib/firebase';
-import { collection, query, orderBy, onSnapshot, limit, doc, writeBatch, deleteDoc, updateDoc } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, limit, doc, writeBatch, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { useAuthStore } from '@/lib/stores/authStore';
-import { decryptMessage, deriveSharedKey, generateKeyPair } from '@securevibechat/shared';
+import { decryptMessage, deriveSharedKey, generateKeyPair } from "@securevibechat/shared";
+import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import { useRecipientTyping } from '@/hooks/useTypingIndicator';
 import MessageContextMenu from './MessageContextMenu';
 
-interface Message {
+export interface Message {
   id: string;
   senderId: string;
   content: any;
   type: string;
   status?: 'sent' | 'delivered' | 'read';
   createdAt: any;
+  editedAt?: any;
   decryptedText?: string;
   isDecryptionError?: boolean;
   fileMetadata?: any;
+  reactions?: Record<string, string>;
+  replyToId?: string;
+  readBy?: Record<string, any>;
 }
 
 interface MessageListProps {
   chatId: string;
   recipientDevices?: Record<string, string>;
   myDevices?: Record<string, string>;
-  recipientId?: string | null;
+  recipientId: string | null;
   isGroup?: boolean;
   participantProfiles?: Record<string, any>;
+  onEdit?: (msg: Message) => void;
+  onReply?: (msg: Message) => void;
+  disappearingSetting?: string;
 }
 
 // Checkmark icons for delivery status
@@ -92,6 +100,12 @@ const ReplyIcon = (
   </svg>
 );
 
+const EditIcon = (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125" />
+  </svg>
+);
+
 const DeleteIcon = (
   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
     <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
@@ -107,13 +121,14 @@ const ForwardIcon = (
 import FilePreview from './FilePreview';
 import VoicePlayer from './VoicePlayer';
 
-export default function MessageList({ chatId, recipientDevices = {}, myDevices = {}, recipientId, isGroup, participantProfiles }: MessageListProps) {
+export default function MessageList({ chatId, recipientDevices = {}, myDevices = {}, recipientId, isGroup, participantProfiles, onEdit, onReply, disappearingSetting }: MessageListProps) {
   const { user } = useAuthStore();
   const [messages, setMessages] = useState<Message[]>([]);
   const [myPrivateKey, setMyPrivateKey] = useState<string | null>(null);
   const [myDeviceId, setMyDeviceId] = useState<string | null>(null);
   const [showCopiedToast, setShowCopiedToast] = useState(false);
   const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const isRecipientTyping = useRecipientTyping(chatId, recipientId ?? null);
 
@@ -153,6 +168,44 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
 
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
+        
+        // Handle disappearing messages
+        let expired = false;
+        if (disappearingSetting && disappearingSetting !== 'off' && data.createdAt) {
+          let maxAgeMs = 0;
+          if (disappearingSetting === '1hr') maxAgeMs = 60 * 60 * 1000;
+          else if (disappearingSetting === '24hr') maxAgeMs = 24 * 60 * 60 * 1000;
+          else if (disappearingSetting === '7days') maxAgeMs = 7 * 24 * 60 * 60 * 1000;
+          
+          if (maxAgeMs > 0) {
+            const msgTime = data.createdAt.toMillis ? data.createdAt.toMillis() : (data.createdAt.seconds * 1000);
+            if ((Date.now() - msgTime) > maxAgeMs) {
+              expired = true;
+            }
+          }
+        }
+        
+        if (expired) return; // Skip rendering expired messages
+
+        // Handle soft-deleted messages
+        if (data.isDeleted) {
+          msgList.push({
+            id: docSnap.id,
+            ...data,
+            decryptedText: data.deletedBy === user.uid
+              ? '🚫 You deleted this message'
+              : '🚫 This message was deleted',
+            isDecryptionError: false,
+            type: 'deleted',
+          } as Message);
+          return;
+        }
+
+        // Skip messages deleted for this specific user ("delete for me")
+        if (data.deletedFor && Array.isArray(data.deletedFor) && data.deletedFor.includes(user.uid)) {
+          return;
+        }
+
         let decryptedText = '';
         let isDecryptionError = false;
 
@@ -171,16 +224,6 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
           // Multi-device decryption
           try {
             const ciphertextData = data.ciphertexts[myDeviceId];
-            // Find the sender's public key
-            // If the sender is ME, I use my own public key (which is why deriveSharedKey works)
-            // But wait! Which device of the sender sent it? 
-            // In our `encryptForMultipleDevices`, we derive the key using `senderPrivateKey` and `targetDevicePublicKey`.
-            // So to decrypt, the target device (ME) needs to derive the key using `myPrivateKey` and `senderDevicePublicKey`?
-            // Wait, we don't know which device sent it!
-            // Actually, we use the public key associated with the ciphertext!
-            // `ciphertextsMap` structure from `encryptForMultipleDevices`:
-            // `[targetDeviceId]: { ciphertext, iv, senderPublicKey }`
-            
             if (ciphertextData.senderPublicKey) {
               const sharedKey = deriveSharedKey(myPrivateKey, ciphertextData.senderPublicKey);
               decryptedText = decryptMessage(ciphertextData, sharedKey);
@@ -192,26 +235,6 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
             console.warn("Decryption failed for multi-device message", docSnap.id);
             decryptedText = "🔒 Error decrypting message";
             isDecryptionError = true;
-          }
-        } else if (data.content?.ciphertext) {
-          // Legacy single-device decryption fallback
-          try {
-             // For legacy, we just find the first available device public key of the sender
-             const senderPubKey = data.senderId === user.uid 
-               ? localStorage.getItem(`publicKey_${user.uid}`) 
-               : Object.values(recipientDevices)[0]; // Best guess
-               
-             if (senderPubKey) {
-               const sharedKey = deriveSharedKey(myPrivateKey, senderPubKey);
-               decryptedText = decryptMessage(data.content, sharedKey);
-             } else {
-               decryptedText = "🔒 Missing sender public key for legacy message";
-               isDecryptionError = true;
-             }
-          } catch (e) {
-             console.warn("Decryption failed for legacy message", docSnap.id);
-             decryptedText = "🔒 Error decrypting legacy message";
-             isDecryptionError = true;
           }
         } else {
           decryptedText = `[Unsupported message type or not encrypted for this device]`;
@@ -239,7 +262,7 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
     });
 
     return () => unsubscribe();
-  }, [chatId, user, myPrivateKey, myDeviceId, recipientDevices, isGroup]);
+  }, [chatId, user, myPrivateKey, myDeviceId, recipientDevices, isGroup, disappearingSetting]);
 
   // Context menu action handlers
   const handleCopy = useCallback((text: string) => {
@@ -249,21 +272,44 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
     });
   }, []);
 
-  const handleDelete = useCallback(async (messageId: string) => {
-    if (!confirm('Delete this message? This cannot be undone.')) return;
+  const handleReact = async (messageId: string, emoji: string) => {
+    if (!user) return;
     try {
-      await deleteDoc(doc(db, `chats/${chatId}/messages`, messageId));
+      const msgRef = doc(db, `chats/${chatId}/messages`, messageId);
+      const msg = messages.find(m => m.id === messageId);
+      if (!msg) return;
+      
+      const newReactions = { ...(msg.reactions || {}) };
+      
+      if (newReactions[user.uid] === emoji) {
+        delete newReactions[user.uid];
+      } else {
+        newReactions[user.uid] = emoji;
+      }
+      
+      await updateDoc(msgRef, { reactions: newReactions });
+    } catch (error) {
+      console.error("Failed to react:", error);
+    }
+  };
+
+  // SECURITY: Use updateDoc with isDeleted flag instead of deleteDoc.
+  // Firestore rules block deleteDoc (allow delete: if false).
+  const handleDelete = useCallback(async (messageId: string) => {
+    try {
+      const msgRef = doc(db, `chats/${chatId}/messages`, messageId);
+      await updateDoc(msgRef, {
+        isDeleted: true,
+        deletedAt: serverTimestamp(),
+        deletedBy: user?.uid || '',
+      });
     } catch (error) {
       console.error('Failed to delete message:', error);
     }
-  }, [chatId]);
+  }, [chatId, user]);
 
   const handleReply = useCallback((text: string) => {
-    // For now, we'll just prepend a quote to the input
-    // A full reply system would require a reply-to reference in the message doc
-    // This is a placeholder that shows the pattern
     console.log('Reply to:', text);
-    // TODO: Set reply-to state in parent and display inline quote
   }, []);
 
   // Build context menu items for a message
@@ -277,24 +323,30 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
       {
         label: 'Reply',
         icon: ReplyIcon,
-        onClick: () => handleReply(msg.decryptedText || ''),
+        onClick: () => onReply?.(msg),
       },
       {
         label: 'Forward',
         icon: ForwardIcon,
         onClick: () => {
-          // TODO: Implement forward flow
           console.log('Forward:', msg.decryptedText);
         },
       },
     ];
 
-    // Only allow delete for own messages
+    if (isMine && msg.type === 'text') {
+      items.push({
+        label: 'Edit',
+        icon: EditIcon,
+        onClick: () => onEdit?.(msg),
+      });
+    }
+
     if (isMine) {
       items.push({
         label: 'Delete',
         icon: DeleteIcon,
-        onClick: () => handleDelete(msg.id),
+        onClick: () => setDeletingMessageId(msg.id),
         danger: true,
       } as any);
     }
@@ -314,13 +366,21 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
             </svg>
             <p>Messages are end-to-end encrypted.</p>
             <p className="text-sm mt-1">No one outside of this chat can read them.</p>
+            {disappearingSetting && disappearingSetting !== 'off' && (
+              <div className="mt-4 px-4 py-2 bg-[var(--color-imessage-blue)]/10 text-[var(--color-imessage-blue)] rounded-xl text-sm flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Disappearing messages turned on
+              </div>
+            )}
           </div>
         ) : (
           messages.map((msg, index) => {
             const isMine = msg.senderId === user?.uid;
             const showTail = index === messages.length - 1 || messages[index + 1]?.senderId !== msg.senderId;
+            const repliedMsg = msg.replyToId ? messages.find(m => m.id === msg.replyToId) : null;
 
-            // Render system messages inline
             if (msg.type === 'system') {
               return (
                 <div key={msg.id} className="flex justify-center my-4">
@@ -334,14 +394,6 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
             const senderProfile = participantProfiles?.[msg.senderId];
             const senderName = senderProfile?.displayName || `User ${msg.senderId.substring(0, 4)}`;
 
-            // Parse file metadata if needed
-            let fileUrl = msg.decryptedText;
-            if (msg.type === 'image' || msg.type === 'video' || msg.type === 'file' || msg.type === 'audio') {
-               // In a real implementation, the decrypted text is the download URL
-               // and the unencrypted doc has fileMetadata. For simplicity, we assume
-               // decryptedText is the URL for now.
-            }
-
             return (
               <div key={msg.id} className={`flex flex-col ${isMine ? 'items-end' : 'items-start'} mb-1`}>
                 {isGroup && !isMine && showTail && (
@@ -354,32 +406,47 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
                       {senderName.substring(0, 2).toUpperCase()}
                     </div>
                   )}
-                  {isGroup && !isMine && !showTail && <div className="w-8" />} {/* spacer for avatar */}
+                  {isGroup && !isMine && !showTail && <div className="w-8" />}
 
-                  <MessageContextMenu items={getMenuItems(msg, isMine)}>
-                    <div
-                      onClick={() => setExpandedMessageId(expandedMessageId === msg.id ? null : msg.id)}
-                      className={`
-                        ${isMine ? (msg.status === 'read' ? 'glass-bubble-sent-read' : 'glass-bubble-sent') : 'glass-bubble-received'}
-                        ${!showTail ? (isMine ? 'rounded-br-[24px]' : 'rounded-bl-[24px]') : ''}
-                        ${msg.isDecryptionError ? 'italic text-opacity-80' : ''}
-                        ${(msg.type === 'sticker' || msg.type === 'image' || msg.type === 'video') ? 'p-1 bg-transparent border-0 shadow-none' : 'px-3 py-2'}
-                        transition-all duration-300 active:scale-95 overflow-hidden cursor-pointer
-                      `}
-                      style={{ maxWidth: '280px' }}
-                    >
+                  <MessageContextMenu items={getMenuItems(msg, isMine)} onReact={(emoji) => handleReact(msg.id, emoji)}>
+                    <div className="relative">
+                      <div
+                        onClick={() => setExpandedMessageId(expandedMessageId === msg.id ? null : msg.id)}
+                        className={`
+                          ${isMine ? (msg.status === 'read' ? 'glass-bubble-sent-read' : 'glass-bubble-sent') : 'glass-bubble-received'}
+                          ${!showTail ? (isMine ? 'rounded-br-[24px]' : 'rounded-bl-[24px]') : ''}
+                          ${msg.isDecryptionError ? 'italic text-opacity-80' : ''}
+                          ${(msg.type === 'sticker' || msg.type === 'image' || msg.type === 'video') ? 'p-1 bg-transparent border-0 shadow-none' : 'px-3 py-2'}
+                          transition-all duration-300 active:scale-95 overflow-hidden cursor-pointer
+                        `}
+                        style={{ maxWidth: '280px' }}
+                      >
+                        {msg.replyToId && (
+                          <div className={`mb-1 p-2 rounded-lg text-xs border-l-2 ${isMine ? 'bg-white/10 border-white/50 text-white/90' : 'bg-black/5 dark:bg-white/5 border-[var(--color-imessage-blue)] text-gray-500'}`}>
+                            <div className="font-semibold mb-0.5">{repliedMsg ? (repliedMsg.senderId === user?.uid ? 'You' : participantProfiles?.[repliedMsg.senderId]?.displayName || 'Someone') : 'Message'}</div>
+                            <div className="line-clamp-1">{repliedMsg ? (repliedMsg.type === 'text' ? repliedMsg.decryptedText : 'Media') : 'Replied to a message'}</div>
+                          </div>
+                        )}
                       {expandedMessageId === msg.id && (
                         <div className={`message-timestamp-container ${isMine ? 'text-[#002f6c]' : 'text-gray-600'} animate-in fade-in slide-in-from-right-2 duration-300`}>
                           {msg.createdAt && (
                             <span>
                               {msg.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              {msg.editedAt && <span className="ml-1 opacity-70 italic">(edited)</span>}
                             </span>
                           )}
-                          {isMine && <StatusIcon status={msg.status} />}
+                          {isMine && (
+                            <StatusIcon 
+                              status={
+                                isGroup 
+                                ? (Object.keys(participantProfiles || {}).filter(id => id !== user?.uid).every(id => msg.readBy && msg.readBy[id]) ? 'read' : 'delivered')
+                                : msg.status
+                              } 
+                            />
+                          )}
                         </div>
                       )}
 
-                      {/* Message Content rendering based on type */}
                       {msg.type === 'text' && (
                         <span className="break-words" style={{ wordBreak: 'break-word' }}>
                           {msg.decryptedText}
@@ -405,6 +472,20 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
                         />
                       )}
                     </div>
+                    {/* Reactions Pill (Outside bubble) */}
+                    {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                      <div className={`absolute -bottom-3 ${isMine ? 'right-2' : 'left-2'} bg-white dark:bg-[#2C2C2E] border border-[var(--border)] rounded-full px-1.5 py-0.5 text-[10px] shadow-sm flex items-center gap-1 z-10 hover:scale-110 transition-transform`}>
+                        {Array.from(new Set(Object.values(msg.reactions))).map(emoji => (
+                          <span key={emoji}>{emoji}</span>
+                        ))}
+                        {Object.keys(msg.reactions).length > 1 && (
+                          <span className="text-gray-500 font-medium ml-0.5">{Object.keys(msg.reactions).length}</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+
                   </MessageContextMenu>
                 </div>
               </div>
@@ -412,7 +493,6 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
           })
         )}
 
-        {/* Typing indicator bubble */}
         {isRecipientTyping && <TypingBubble />}
 
         <div ref={bottomRef} className="h-1" />
@@ -429,12 +509,15 @@ async function markMessagesAsRead(chatId: string, messageIds: string[], myUid: s
     const batch = writeBatch(db);
     messageIds.forEach((msgId) => {
       const msgRef = doc(db, `chats/${chatId}/messages`, msgId);
-      batch.update(msgRef, { status: 'read' });
+      batch.update(msgRef, { 
+        status: 'read',
+        [`readBy.${myUid}`]: Date.now()
+      });
     });
     const chatRef = doc(db, 'chats', chatId);
     batch.update(chatRef, { [`unreadCount.${myUid}`]: 0 });
     await batch.commit();
-  } catch (error) {
-    console.error('Failed to mark messages as read:', error);
+  } catch (err) {
+    console.error("Error marking messages as read:", err);
   }
 }

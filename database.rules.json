@@ -1,12 +1,14 @@
 {
   "rules": {
+    // ── /presence/$uid ──
+    // Legacy presence path: stores online/lastSeen/typing state per user.
     "presence": {
       "$uid": {
-        // Anyone can read presence
+        // Any authenticated user can read presence (needed for online indicators)
         ".read": "auth != null",
-        // Only the user can write their own presence
+        // Only the owning user can write their own presence
         ".write": "auth != null && auth.uid === $uid",
-        
+
         "online": {
           ".validate": "newData.isBoolean()"
         },
@@ -15,8 +17,53 @@
         },
         "typing": {
           "$chatId": {
-             // Basic validation for typing indicator
-             ".validate": "newData.hasChildren(['isTyping', 'timestamp'])"
+            // Basic validation for typing indicator
+            ".validate": "newData.hasChildren(['isTyping', 'timestamp'])"
+          }
+        }
+      }
+    },
+
+    // ── /status/$userId ──
+    // Active presence path used by the usePresence hook (writes online/lastSeen).
+    // Without these rules the path was completely unprotected.
+    "status": {
+      "$userId": {
+        // Any authenticated user can read status (needed for presence display)
+        ".read": "auth != null",
+        // Only the owning user can write their own status
+        ".write": "auth != null && auth.uid === $userId",
+
+        "online": {
+          ".validate": "newData.isBoolean()"
+        },
+        "lastSeen": {
+          // Server timestamp or epoch millis
+          ".validate": "newData.isNumber()"
+        }
+      }
+    },
+
+    // ── /typing/$chatId/$userId ──
+    // Per-chat typing indicators. Each user writes only their own node
+    // under the relevant chatId so other participants can display "… is typing".
+    "typing": {
+      "$chatId": {
+        // Any authenticated user can read typing indicators for any chat
+        ".read": "auth != null",
+
+        "$userId": {
+          // Only the owning user can write their own typing indicator
+          ".write": "auth != null && auth.uid === $userId",
+
+          // Require both isTyping (bool) and timestamp (number)
+          ".validate": "newData.hasChildren(['isTyping', 'timestamp'])",
+
+          "isTyping": {
+            ".validate": "newData.isBoolean()"
+          },
+          "timestamp": {
+            ".validate": "newData.isNumber()"
           }
         }
       }

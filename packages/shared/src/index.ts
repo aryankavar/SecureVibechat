@@ -5,11 +5,6 @@ export interface KeyPair {
   privateKey: string; // Base64
 }
 
-export interface EncryptedPayload {
-  ciphertext: string; // Base64
-  iv: string; // Base64
-  ephemeralPublicKey?: string; // Base64 (only for the first message or if ephemeral keys are used)
-}
 
 /**
  * Initialize libsodium. Must be called before any other functions.
@@ -50,7 +45,7 @@ export function deriveSharedKey(myPrivateKey: string, theirPublicKey: string): U
  * @param plaintext The string to encrypt
  * @param sharedKey The 32-byte derived shared key
  */
-export function encryptMessage(plaintext: string, sharedKey: Uint8Array): EncryptedPayload {
+export function encryptMessage(plaintext: string, sharedKey: Uint8Array): { ciphertext: string, iv: string } {
   const iv = sodium.randombytes_buf(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
   const ciphertext = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
     plaintext,
@@ -71,7 +66,7 @@ export function encryptMessage(plaintext: string, sharedKey: Uint8Array): Encryp
  * @param payload The encrypted payload
  * @param sharedKey The 32-byte derived shared key
  */
-export function decryptMessage(payload: EncryptedPayload, sharedKey: Uint8Array): string {
+export function decryptMessage(payload: { ciphertext: string, iv: string }, sharedKey: Uint8Array): string {
   const ciphertext = sodium.from_base64(payload.ciphertext, sodium.base64_variants.ORIGINAL);
   const iv = sodium.from_base64(payload.iv, sodium.base64_variants.ORIGINAL);
   
@@ -86,7 +81,9 @@ export function decryptMessage(payload: EncryptedPayload, sharedKey: Uint8Array)
   return sodium.to_string(decrypted);
 }
 
-export interface MultiDeviceEncryptedPayload extends EncryptedPayload {
+export interface EncryptedPayload {
+  ciphertext: string; // Base64
+  iv: string; // Base64
   senderPublicKey: string;
 }
 
@@ -103,15 +100,16 @@ export function encryptForMultipleDevices(
   myPrivateKey: string,
   myPublicKey: string,
   recipientDevices: Record<string, string>
-): Record<string, MultiDeviceEncryptedPayload> {
-  const ciphertexts: Record<string, MultiDeviceEncryptedPayload> = {};
+): Record<string, EncryptedPayload> {
+  const ciphertexts: Record<string, EncryptedPayload> = {};
   
   for (const [deviceId, publicKey] of Object.entries(recipientDevices)) {
     try {
       const sharedKey = deriveSharedKey(myPrivateKey, publicKey);
       const encrypted = encryptMessage(plaintext, sharedKey);
       ciphertexts[deviceId] = {
-        ...encrypted,
+        ciphertext: encrypted.ciphertext,
+        iv: encrypted.iv,
         senderPublicKey: myPublicKey
       };
     } catch (e) {
@@ -121,3 +119,6 @@ export function encryptForMultipleDevices(
   
   return ciphertexts;
 }
+export * from './groupEncryption';
+export * from './keyBackup';
+export * from './keyStorage';

@@ -5,6 +5,7 @@ import { db } from '@/lib/firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import app from '@/lib/firebase';
+import ConfirmDialog from '@/components/ui/ConfirmDialog';
 
 const functions = getFunctions(app);
 
@@ -49,6 +50,8 @@ export default function GroupInfoPanel({
   const [removingUid, setRemovingUid] = useState<string | null>(null);
   const [isLeaving, setIsLeaving] = useState(false);
   const [error, setError] = useState('');
+  const [confirmRemoveUid, setConfirmRemoveUid] = useState<string | null>(null);
+  const [confirmLeave, setConfirmLeave] = useState(false);
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -166,8 +169,6 @@ export default function GroupInfoPanel({
   };
 
   const handleRemoveMember = async (uid: string) => {
-    if (!confirm('Remove this member from the group?')) return;
-
     setRemovingUid(uid);
     setError('');
     try {
@@ -182,8 +183,6 @@ export default function GroupInfoPanel({
   };
 
   const handleLeaveGroup = async () => {
-    if (!confirm('Are you sure you want to leave this group?')) return;
-
     setIsLeaving(true);
     setError('');
     try {
@@ -330,7 +329,7 @@ export default function GroupInfoPanel({
                       {/* Remove button (admin only, not for self) */}
                       {isAdmin && !isSelf && (
                         <button
-                          onClick={() => handleRemoveMember(member.uid)}
+                          onClick={() => setConfirmRemoveUid(member.uid)}
                           disabled={removingUid === member.uid}
                           className="text-xs text-red-500 hover:text-red-600 font-medium px-2.5 py-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50 flex-shrink-0"
                         >
@@ -352,7 +351,7 @@ export default function GroupInfoPanel({
         {/* Leave Group Button (pinned to bottom) */}
         <div className="px-5 pb-5 pt-3 border-t border-[var(--border)]">
           <button
-            onClick={handleLeaveGroup}
+            onClick={() => setConfirmLeave(true)}
             disabled={isLeaving}
             className="w-full py-3 bg-red-500/10 text-red-500 font-semibold rounded-2xl hover:bg-red-500/20 transition-colors active:scale-[0.98] transform disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
@@ -467,6 +466,34 @@ export default function GroupInfoPanel({
           </div>
         </div>
       )}
+      {/* Confirm Dialogs */}
+      <ConfirmDialog
+        isOpen={!!confirmRemoveUid}
+        title="Remove Member"
+        message="Are you sure you want to remove this member from the group?"
+        confirmText="Remove"
+        isDestructive={true}
+        onConfirm={() => {
+          if (confirmRemoveUid) {
+            handleRemoveMember(confirmRemoveUid);
+            setConfirmRemoveUid(null);
+          }
+        }}
+        onCancel={() => setConfirmRemoveUid(null)}
+      />
+
+      <ConfirmDialog
+        isOpen={confirmLeave}
+        title="Leave Group"
+        message="Are you sure you want to leave this group? You won't be able to send or receive messages here anymore."
+        confirmText="Leave"
+        isDestructive={true}
+        onConfirm={() => {
+          handleLeaveGroup();
+          setConfirmLeave(false);
+        }}
+        onCancel={() => setConfirmLeave(false)}
+      />
     </>
   );
 }

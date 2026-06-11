@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { AuthProvider } from "@/components/auth/AuthProvider";
+import { AnalyticsProvider } from "@/components/layout/AnalyticsProvider";
+import { ThemeProvider } from "@/components/layout/ThemeProvider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,9 +17,13 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased h-[100dvh] w-full overflow-hidden">
-        <AuthProvider>
-          {children}
-        </AuthProvider>
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+          <AnalyticsProvider>
+            <AuthProvider>
+              {children}
+            </AuthProvider>
+          </AnalyticsProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

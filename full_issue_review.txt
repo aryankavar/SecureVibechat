@@ -1,0 +1,137 @@
+Created At: 2026-06-06T19:57:59Z
+Completed At: 2026-06-06T19:58:00Z
+
+				The command completed successfully.
+				Output:
+				<USER_REQUEST>
+# SecureVibe — Outstanding Issues (Updated Review)
+> Re-reviewed after v2 project overview | June 2025  
+> Issues already fixed have been removed. This is your current punch list.
+
+---
+
+## What you already fixed ✅
+These are closed — don't revisit them.
+
+| Fixed Issue | How |
+|-------------|-----|
+| Private keys in `localStorage` | Web Crypto API + IndexedDB, `extractable: false` |
+| Group E2EE performance (O(N×M)) | Epoch-based rotating group symmetric keys |
+| Phone-only auth | Email/Password + Google OAuth added |
+| Contact blocking | Implemented with blocked-user exclusion in search |
+| Rate limiting | Client-side throttling + server-side Cloud Function checks |
+| No Cloud Functions | Now part of architecture for edge logic |
+| Anti-enumeration search | Min 3 chars enforced, blocked users excluded |
+
+---
+
+## Priority levels
+- 🔴 **Critical** — Fix before sharing publicly
+- 🟠 **Serious** — Fix this week
+- 🔵 **Important** — Fix before calling this production-ready
+- 🟢 **Enhancement** — After everything above is done
+
+---
+
+## 🔴 Critical
+
+### 1. Version numbers in your docs are still wrong
+
+**Why it's a problem:**  
+Any senior developer, recruiter, or interviewer who reads your project overview will
+immediately notice these don't match reality. It signals inattention to detail — which
+is the opposite of the impression you want from a security-focused project.
+
+Current wrong values in your doc:
+
+| What you wrote | Reality |
+|----------------|---------|
+| Next.js `16.2.6` | Latest is `15.x` — v16 doesn't exist |
+| Firebase `12.13.0` | Latest JS SDK is `10.x` — v12 doesn't exist |
+| Lucide React `1.17.0` | Latest is `~0.4xx` — v1 doesn't exist |
+
+**How to fix it — takes 5 minutes:**
+
+```bash
+# Run this from your project root
+npm list --depth=0 --workspace=@securevibechat/web 2>/dev/null
+
+# Or for all workspaces
+npm list --depth=0
+```
+
+Copy t
+<truncated 152 bytes>
+hat.data().disappearingTimer * 1000
+      );
+      const expired = await chat.ref.collection('messages')
+        .where('createdAt', '<', cutoff)
+        .get();
+
+      const batch = db.batch();
+      expired.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+  });
+```
+
+**Effort:** 2 days  
+
+---
+
+### 11. Message editing
+
+```typescript
+// Add to message document:
+editedAt?: Timestamp;
+
+// Re-encrypt edited text for all devices:
+async function editMessage(messageId: string, newPlaintext: string) {
+  const newCiphertexts = await encryptForAllDevices(newPlaintext, chatParticipants);
+
+  await updateDoc(doc(db, `chats/${chatId}/messages/${messageId}`), {
+    ciphertexts: newCiphertexts,
+    editedAt: serverTimestamp()
+  });
+}
+
+// Show "edited" label in MessageBubble if editedAt exists
+```
+
+**Effort:** 1 day  
+
+---
+
+## Recommended sprint plan (updated)
+
+| Sprint | Focus | Issues |
+|--------|-------|--------|
+| **This week** | Quick wins | #1 (version numbers — 5 min), #2 (auth docs — 30 min), #8 (confirm deletion) |
+| **Week 2** | Security | #3 (real rate limiting), #5 (dual key exit plan) |
+| **Week 3** | UX | #4 (new device — Part A now, Part B next sprint) |
+| **Week 4** | Visibility | #6 (Sentry + Analytics) |
+| **Week 5–6** | Features | #7 (reactions, replies, typing, push) |
+| **Backlog** | Enhancements | #9, #10, #11 |
+
+---
+
+## What's closed — don't reopen these
+
+| Issue | Status |
+|-------|--------|
+| `localStorage` key storage | ✅ Fixed — Web Crypto + IndexedDB |
+| Group E2EE O(N×M) scaling | ✅ Fixed — epoch-based group key rotation |
+| Phone-only authentication | ✅ Fixed — Email + Google OAuth added |
+| Contact blocking | ✅ Fixed |
+| No rate limiting at all | ✅ Partially fixed — server-side needs hardening (Issue #3) |
+| No Cloud Functions | ✅ Fixed |
+| Anti-enumeration search | ✅ Fixed |
+
+---
+
+*Updated review — June 2025 | SecureVibe v2*
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-07T01:08:54+05:30.
+</ADDITIONAL_METADATA>
+

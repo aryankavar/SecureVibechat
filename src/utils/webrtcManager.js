@@ -267,6 +267,10 @@ class WebRTCManager {
     // Close data channel
     const dataChannel = this.dataChannels.get(chatId)
     if (dataChannel) {
+      dataChannel.onopen = null
+      dataChannel.onclose = null
+      dataChannel.onmessage = null
+      dataChannel.onerror = null
       dataChannel.close()
       this.dataChannels.delete(chatId)
     }
@@ -274,6 +278,10 @@ class WebRTCManager {
     // Close peer connection
     const peerConnection = this.peerConnections.get(chatId)
     if (peerConnection) {
+      peerConnection.onicecandidate = null
+      peerConnection.ondatachannel = null
+      peerConnection.oniceconnectionstatechange = null
+      peerConnection.onsignalingstatechange = null
       peerConnection.close()
       this.peerConnections.delete(chatId)
     }

@@ -87,11 +87,13 @@ export const onMessageCreate = functions.firestore
 
     const chatRef = db.collection('chats').doc(chatId);
     
+    let chatType = 'dm';
     await db.runTransaction(async (transaction) => {
       const chatDoc = await transaction.get(chatRef);
       if (!chatDoc.exists) return;
       
       const chatData = chatDoc.data()!;
+      chatType = chatData.type;
       const participants = chatData.participants || [];
       
       // Build unread count updates
@@ -118,9 +120,83 @@ export const onMessageCreate = functions.firestore
       });
     });
 
-    // TODO: Send FCM Push Notification here
-    // In a real app, you would query the recipient's FCM tokens and send a silent/data notification
-    // to trigger background decryption or a visible notification with hidden content.
+    // We still need participants to send FCM
+    const chatDoc = await chatRef.get();
+    if (!chatDoc.exists) return;
+    const participants = chatDoc.data()?.participants || [];
+
+    // Send FCM Push Notification
+    if (participants && participants.length > 0) {
+      const tokens: string[] = [];
+      const tokensMap = new Map<string, string>(); // Keep track of token -> uid for cleanup
+
+      // Fetch fcmTokens for all recipients
+      await Promise.all(
+        participants.map(async (uid: string) => {
+          if (uid !== message.senderId) {
+            const userDoc = await db.collection('users').doc(uid).get();
+            if (userDoc.exists) {
+              const data = userDoc.data();
+              if (data?.fcmTokens && Array.isArray(data.fcmTokens)) {
+                data.fcmTokens.forEach((token: string) => {
+                  tokens.push(token);
+                  tokensMap.set(token, uid);
+                });
+              }
+            }
+          }
+        })
+      );
+
+      if (tokens.length > 0) {
+        try {
+          const payload = {
+            notification: {
+              title: chatType === 'group' ? 'New Group Message' : 'New Message',
+              body: 'You have a new encrypted message.',
+            },
+            data: {
+              chatId,
+              click_action: 'FLUTTER_NOTIFICATION_CLICK', // For mobile apps if needed
+            },
+            tokens,
+          };
+
+          const response = await admin.messaging().sendEachForMulticast(payload);
+          
+          // Cleanup invalid tokens
+          if (response.failureCount > 0) {
+            const tokensToRemoveByUid: Record<string, string[]> = {};
+            response.responses.forEach((resp, idx) => {
+              if (!resp.success) {
+                const errorStr = resp.error?.code;
+                if (
+                  errorStr === 'messaging/invalid-registration-token' ||
+                  errorStr === 'messaging/registration-token-not-registered'
+                ) {
+                  const failedToken = tokens[idx];
+                  const uid = tokensMap.get(failedToken);
+                  if (uid) {
+                    if (!tokensToRemoveByUid[uid]) tokensToRemoveByUid[uid] = [];
+                    tokensToRemoveByUid[uid].push(failedToken);
+                  }
+                }
+              }
+            });
+
+            // Run cleanup updates
+            const cleanupPromises = Object.entries(tokensToRemoveByUid).map(([uid, staleTokens]) => {
+              return db.collection('users').doc(uid).update({
+                fcmTokens: admin.firestore.FieldValue.arrayRemove(...staleTokens)
+              });
+            });
+            await Promise.all(cleanupPromises);
+          }
+        } catch (error) {
+          console.error('Error sending FCM notifications:', error);
+        }
+      }
+    }
 
     // Mark message as 'delivered' server-side (it was 'sent' when client wrote it)
     // Skip for system messages

@@ -129,6 +129,7 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
   const [showCopiedToast, setShowCopiedToast] = useState(false);
   const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [messageLimit, setMessageLimit] = useState(50);
   const bottomRef = useRef<HTMLDivElement>(null);
   const isRecipientTyping = useRecipientTyping(chatId, recipientId ?? null);
 
@@ -167,11 +168,11 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
 
     const q = query(
       collection(db, `chats/${chatId}/messages`),
-      orderBy('createdAt', 'asc'),
-      limit(100)
+      orderBy('createdAt', 'desc'),
+      limit(messageLimit)
     );
 
-    const groupKeysCache: Record<number, Uint8Array> = {};
+    const groupKeysCache: Record<number, any> = {};
 
     const unsubscribe = onSnapshot(q, async (snapshot) => {
       const msgList: Message[] = [];
@@ -225,7 +226,7 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
           decryptedText = data.systemText || 'System message';
         } else if (isGroup && data.content?.ciphertext) {
            try {
-             let keyToUse = new Uint8Array(32); // fallback to zero-key for older messages
+             let keyToUse: any = new Uint8Array(32); // fallback to zero-key for older messages
              if (data.epoch) {
                if (groupKeysCache[data.epoch]) {
                  keyToUse = groupKeysCache[data.epoch];
@@ -275,6 +276,9 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
           unreadMessageIds.push(docSnap.id);
         }
       } // end for loop
+      
+      // Messages are fetched in descending order to get the latest, so we must reverse them for chronological UI display
+      msgList.reverse();
 
       setMessages(msgList);
 
@@ -400,7 +404,18 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
             )}
           </div>
         ) : (
-          messages.map((msg, index) => {
+          <>
+            {messages.length >= messageLimit && (
+              <div className="flex justify-center my-2">
+                <button 
+                  onClick={() => setMessageLimit(prev => prev + 50)}
+                  className="px-4 py-1.5 bg-[var(--surface)] text-[var(--foreground)] border border-[var(--border)] rounded-full text-xs shadow-sm hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                >
+                  Load older messages
+                </button>
+              </div>
+            )}
+            {messages.map((msg, index) => {
             const isMine = msg.senderId === user?.uid;
             const showTail = index === messages.length - 1 || messages[index + 1]?.senderId !== msg.senderId;
             const repliedMsg = msg.replyToId ? messages.find(m => m.id === msg.replyToId) : null;
@@ -514,7 +529,8 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
                 </div>
               </div>
             );
-          })
+          })}
+          </>
         )}
 
         {isRecipientTyping && <TypingBubble />}

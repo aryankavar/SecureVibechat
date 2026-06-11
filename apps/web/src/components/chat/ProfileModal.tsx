@@ -7,6 +7,8 @@ import Image from 'next/image';
 import { auth } from '@/lib/firebase';
 import { signOut } from 'firebase/auth';
 import { useRouter } from 'next/navigation';
+import { useTheme } from 'next-themes';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
 
 interface ProfileModalProps {
   isOpen: boolean;
@@ -22,6 +24,13 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
   const [about, setAbout] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
+  const { theme, setTheme } = useTheme();
+  const { requestPermission, permissionStatus, fcmToken } = usePushNotifications();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     if (profile) {
@@ -148,7 +157,25 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                 <p className="text-gray-500 mt-1">{profile.about || 'Hey there! I am using SecureVibeChat.'}</p>
               </div>
               
-              <div className="space-y-3 mt-8">
+              {/* Theme Toggle */}
+              {mounted && (
+                <div className="flex items-center justify-between p-4 mb-6 rounded-xl border border-[var(--border)] bg-[var(--surface)]">
+                  <div className="flex items-center gap-3">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 text-gray-500">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+                    </svg>
+                    <span className="font-medium text-[var(--foreground)]">Dark Mode</span>
+                  </div>
+                  <button 
+                    onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                    className={`w-12 h-6 rounded-full flex items-center transition-colors px-1 ${theme === 'dark' ? 'bg-[var(--color-imessage-blue)] justify-end' : 'bg-gray-300 justify-start'}`}
+                  >
+                    <div className="w-4 h-4 rounded-full bg-white shadow-md transform transition-transform" />
+                  </button>
+                </div>
+              )}
+
+              <div className="space-y-3 mt-4">
                 <button 
                   onClick={() => setIsEditing(true)}
                   className="w-full py-3 flex items-center justify-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--background)] hover:bg-[var(--hover)] transition-colors font-medium text-[var(--foreground)]"
@@ -159,6 +186,18 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                   </svg>
                   Edit Profile
                 </button>
+
+                {permissionStatus !== 'granted' && (
+                  <button 
+                    onClick={requestPermission}
+                    className="w-full py-3 flex items-center justify-center gap-2 rounded-xl border border-[var(--color-imessage-blue)]/20 bg-[var(--color-imessage-blue)]/10 text-[var(--color-imessage-blue)] hover:bg-[var(--color-imessage-blue)]/20 transition-colors font-medium"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
+                    </svg>
+                    Enable Notifications
+                  </button>
+                )}
                 
                 <button 
                   onClick={handleLogout}

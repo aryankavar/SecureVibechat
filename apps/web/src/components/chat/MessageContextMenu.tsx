@@ -11,14 +11,17 @@ interface ContextMenuItem {
 
 interface MessageContextMenuProps {
   items: ContextMenuItem[];
+  onReact?: (emoji: string) => void;
   children: React.ReactNode;
 }
+
+const COMMON_EMOJIS = ['❤️', '😂', '😮', '😢', '🙏', '👍'];
 
 /**
  * Context menu that appears on right-click (desktop) or long-press (mobile).
  * Positioned dynamically to stay within viewport bounds.
  */
-export default function MessageContextMenu({ items, children }: MessageContextMenuProps) {
+export default function MessageContextMenu({ items, onReact, children }: MessageContextMenuProps) {
   const [visible, setVisible] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const menuRef = useRef<HTMLDivElement>(null);
@@ -129,11 +132,31 @@ export default function MessageContextMenu({ items, children }: MessageContextMe
           {/* Menu */}
           <div
             ref={menuRef}
-            className="absolute bg-white dark:bg-[#2C2C2E] rounded-xl shadow-2xl overflow-hidden min-w-[180px] animate-in fade-in zoom-in-95 duration-150 border border-[var(--border)]"
+            className="absolute flex flex-col animate-in fade-in zoom-in-95 duration-150"
             style={{ left: position.x, top: position.y }}
             onClick={(e) => e.stopPropagation()}
           >
-            {items.map((item, idx) => (
+            {/* Reaction Bar */}
+            {onReact && (
+              <div className="bg-white dark:bg-[#2C2C2E] rounded-full shadow-2xl flex items-center gap-2 p-2 px-3 mb-2 border border-[var(--border)]">
+                {COMMON_EMOJIS.map((emoji) => (
+                  <button
+                    key={emoji}
+                    onClick={() => {
+                      onReact(emoji);
+                      setVisible(false);
+                    }}
+                    className="text-2xl hover:scale-125 transition-transform duration-200"
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Menu Items */}
+            <div className="bg-white dark:bg-[#2C2C2E] rounded-xl shadow-2xl overflow-hidden min-w-[180px] border border-[var(--border)]">
+              {items.map((item, idx) => (
               <button
                 key={idx}
                 onClick={() => {
@@ -152,6 +175,7 @@ export default function MessageContextMenu({ items, children }: MessageContextMe
                 <span>{item.label}</span>
               </button>
             ))}
+            </div>
           </div>
         </div>
       )}

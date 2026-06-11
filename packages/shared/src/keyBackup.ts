@@ -1,4 +1,4 @@
-import sodium from 'libsodium-wrappers';
+import sodium from 'libsodium-wrappers-sumo';
 
 export interface KeyBackupBlob {
   encryptedKey: string;
@@ -12,11 +12,18 @@ export async function encryptPrivateKeyWithPIN(
 ): Promise<KeyBackupBlob> {
   await sodium.ready;
 
-  const salt = sodium.randombytes_buf(16);
+  const salt = sodium.randombytes_buf(sodium.crypto_pwhash_SALTBYTES);
   
-  // Use BLAKE2b (crypto_generichash) since crypto_pwhash requires the sumo build
+  // Use Argon2id (crypto_pwhash) which is memory-hard and computationally expensive
   const pinBuffer = sodium.from_string(pin);
-  const backupKey = sodium.crypto_generichash(32, pinBuffer, salt);
+  const backupKey = sodium.crypto_pwhash(
+    32, // Key size
+    pinBuffer,
+    salt,
+    sodium.crypto_pwhash_OPSLIMIT_INTERACTIVE,
+    sodium.crypto_pwhash_MEMLIMIT_INTERACTIVE,
+    sodium.crypto_pwhash_ALG_ARGON2ID13
+  );
 
   const iv = sodium.randombytes_buf(24);
   const encrypted = sodium.crypto_secretbox_easy(privateKeyBytes, iv, backupKey);
@@ -36,7 +43,14 @@ export async function decryptPrivateKeyWithPIN(
 
   const saltBytes = sodium.from_base64(blob.salt);
   const pinBuffer = sodium.from_string(pin);
-  const backupKey = sodium.crypto_generichash(32, pinBuffer, saltBytes);
+  const backupKey = sodium.crypto_pwhash(
+    32, // Key size
+    pinBuffer,
+    saltBytes,
+    sodium.crypto_pwhash_OPSLIMIT_INTERACTIVE,
+    sodium.crypto_pwhash_MEMLIMIT_INTERACTIVE,
+    sodium.crypto_pwhash_ALG_ARGON2ID13
+  );
 
   try {
     return sodium.crypto_secretbox_open_easy(

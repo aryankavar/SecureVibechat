@@ -1,16 +1,142 @@
 import { View, Text, FlatList, TextInput, StyleSheet, KeyboardAvoidingView, Platform, TouchableOpacity, PanResponder, Animated } from 'react-native';
 import { BlurView } from 'expo-blur';
-import { useState, useRef } from 'react';
-
-const DUMMY_MESSAGES = [
-  { id: '1', text: 'Hey, did you see the new iOS 26 Glass UI?', isSent: false, time: '10:42 AM' },
-  { id: '2', text: 'Yes! The mesh gradient looks amazing behind these frosted bubbles.', isSent: true, time: '10:45 AM' },
-  { id: '3', text: 'Exactly what we wanted. And it uses the exact same shared crypto logic as the web app!', isSent: false, time: '10:47 AM' },
-];
+import { useState, useRef, useEffect } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { collection, query, orderBy, limit, onSnapshot, doc, getDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../../../../lib/firebase';
+import { useAuthStore } from '../../../../lib/stores/authStore';
+import { decryptMessage, encryptForMultipleDevices, deriveSharedKey } from '@securevibechat/shared';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Ionicons } from '@expo/vector-icons';
 
 export default function ChatScreen() {
+  const { id: chatId } = useLocalSearchParams<{ id: string }>();
+  const { user } = useAuthStore();
+  const router = useRouter();
+  
+  const [messages, setMessages] = useState<any[]>([]);
   const [inputText, setInputText] = useState('');
+  const [loading, setLoading] = useState(true);
   const slideAnim = useRef(new Animated.Value(0)).current;
+
+  const [myPrivateKey, setMyPrivateKey] = useState<string | null>(null);
+  const [myDeviceId, setMyDeviceId] = useState<string | null>(null);
+  const [recipientDevices, setRecipientDevices] = useState<Record<string, string>>({});
+  const [myPublicKey, setMyPublicKey] = useState<string | null>(null);
+
+  // Load encryption keys
+  useEffect(() => {
+    if (!user) return;
+    const loadKeys = async () => {
+      const pk = await AsyncStorage.getItem(`privateKey_${user.uid}`);
+      const dId = await AsyncStorage.getItem(`deviceId_${user.uid}`);
+      if (pk && dId) {
+        setMyPrivateKey(pk);
+        setMyDeviceId(dId);
+        
+        // Fetch my device doc to get my public key
+        const myDevDoc = await getDoc(doc(db, `users/${user.uid}/devices/${dId}`));
+        if (myDevDoc.exists()) {
+          setMyPublicKey(myDevDoc.data().publicKey);
+        }
+      }
+    };
+    loadKeys();
+  }, [user]);
+
+  // Load chat and recipient keys
+  useEffect(() => {
+    if (!chatId || !user) return;
+
+    const fetchChatInfo = async () => {
+      const chatDoc = await getDoc(doc(db, 'chats', chatId));
+      if (chatDoc.exists()) {
+        const data = chatDoc.data();
+        const otherUserId = data.participants?.find((uid: string) => uid !== user.uid);
+        
+        if (otherUserId) {
+          // Fetch their devices
+          const unsubDevices = onSnapshot(collection(db, `users/${otherUserId}/devices`), (snap) => {
+            const devices: Record<string, string> = {};
+            snap.forEach(d => {
+              if (d.data().publicKey) {
+                devices[d.id] = d.data().publicKey;
+              }
+            });
+            setRecipientDevices(devices);
+          });
+          return unsubDevices;
+        }
+      }
+    };
+    fetchChatInfo();
+  }, [chatId, user]);
+
+  // Listen to messages
+  useEffect(() => {
+    if (!chatId || !user || !myPrivateKey || !myDeviceId) return;
+
+    const q = query(
+      collection(db, `chats/${chatId}/messages`),
+      orderBy('createdAt', 'asc'),
+      limit(100)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgList: any[] = [];
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        let decryptedText = '';
+        
+        if (data.type === 'system') {
+          decryptedText = data.systemText || '';
+        } else if (data.ciphertexts && data.ciphertexts[myDeviceId]) {
+          try {
+            const cdata = data.ciphertexts[myDeviceId];
+            const sharedKey = deriveSharedKey(myPrivateKey, cdata.senderPublicKey);
+            decryptedText = decryptMessage(cdata, sharedKey);
+          } catch (e) {
+            decryptedText = '🔒 Error decrypting message';
+          }
+        } else {
+          decryptedText = '🔒 Encrypted message';
+        }
+
+        msgList.push({
+          id: docSnap.id,
+          ...data,
+          decryptedText,
+          isSent: data.senderId === user.uid
+        });
+      });
+      setMessages(msgList);
+      setLoading(false);
+    });
+
+    return unsubscribe;
+  }, [chatId, user, myPrivateKey, myDeviceId]);
+
+  const handleSend = async () => {
+    if (!inputText.trim() || !user || !myPrivateKey || !myPublicKey) return;
+    
+    const text = inputText;
+    setInputText('');
+
+    // Encrypt for recipients
+    const allRecipientDevices = { ...recipientDevices };
+    // Add our own device so we can read it too
+    allRecipientDevices[myDeviceId!] = myPublicKey;
+
+    const ciphertexts = encryptForMultipleDevices(text, myPrivateKey, myPublicKey, allRecipientDevices);
+
+    await addDoc(collection(db, `chats/${chatId}/messages`), {
+      senderId: user.uid,
+      type: 'text',
+      ciphertexts,
+      status: 'sent',
+      createdAt: serverTimestamp()
+    });
+  };
 
   const panResponder = useRef(
     PanResponder.create({
@@ -33,7 +159,7 @@ export default function ChatScreen() {
     })
   ).current;
 
-  const renderMessage = ({ item }: { item: typeof DUMMY_MESSAGES[0] }) => {
+  const renderMessage = ({ item }: { item: any }) => {
     return (
       <View style={styles.messageWrapper}>
         <Animated.View style={[
@@ -50,7 +176,7 @@ export default function ChatScreen() {
             ]}
           >
             <Text style={[styles.messageText, item.isSent ? styles.messageTextSent : styles.messageTextReceived]}>
-              {item.text}
+              {item.decryptedText || item.text}
             </Text>
           </BlurView>
         </Animated.View>
@@ -66,7 +192,9 @@ export default function ChatScreen() {
             })
           }
         ]}>
-          <Text style={styles.hiddenTimestampText}>{item.time}</Text>
+          <Text style={styles.hiddenTimestampText}>
+            {item.createdAt ? new Date(item.createdAt?.toMillis?.() || item.createdAt?.seconds * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Now'}
+          </Text>
           {item.isSent && <Text style={styles.hiddenReadReceipt}>✓✓</Text>}
         </Animated.View>
       </View>
@@ -81,7 +209,7 @@ export default function ChatScreen() {
     >
       <View style={styles.container} {...panResponder.panHandlers}>
         <FlatList
-          data={DUMMY_MESSAGES}
+          data={messages}
           keyExtractor={item => item.id}
           renderItem={renderMessage}
           contentContainerStyle={styles.listContent}
@@ -96,7 +224,7 @@ export default function ChatScreen() {
           value={inputText}
           onChangeText={setInputText}
         />
-        <TouchableOpacity style={styles.sendButton}>
+        <TouchableOpacity style={styles.sendButton} onPress={handleSend}>
           <Text style={styles.sendButtonText}>↑</Text>
         </TouchableOpacity>
       </BlurView>

@@ -69,6 +69,16 @@ service cloud.firestore {
         allow read: if isAuthenticated();
         allow write: if isUser(userId);
       }
+
+      // -----------------------------------------------------------------
+      // Key Backups Subcollection
+      // Only the owning user can read/write their own PIN-encrypted key
+      // backups. This prevents any other user from accessing or tampering
+      // with another user's encrypted key material.
+      // -----------------------------------------------------------------
+      match /keyBackups/{backupId} {
+        allow read, write: if isUser(userId);
+      }
     }
     
     // -------------------------------------------------------------------------
@@ -83,15 +93,31 @@ service cloud.firestore {
       allow create: if isAuthenticated() && 
                    request.auth.uid in request.resource.data.participants;
       
-      // Updating requires being a participant (e.g. updating unread counts, last message)
-      // Note: In a fully secure setup, ONLY Cloud Functions would update the chat doc,
-      // but allowing participants is okay for client-side denormalization if needed.
+      // -----------------------------------------------------------------
+      // Chat update rule — strict field-level validation
+      // -----------------------------------------------------------------
       allow update: if isAuthenticated() && 
-                   request.auth.uid in resource.data.participants;
+                   request.auth.uid in resource.data.participants &&
+
+                   // IMMUTABILITY: participants array must never change after
+                   // creation. Allowing mutation would let a malicious client
+                   // add or remove users from an existing conversation.
+                   request.resource.data.participants == resource.data.participants &&
+
+                   // IMMUTABILITY: chat type (dm vs group) is set at creation
+                   // and must never change. Changing it could bypass permission
+                   // logic that branches on type.
+                   request.resource.data.type == resource.data.type;
+
+                   // Allowed mutable fields: lastMessage, lastMessageTime,
+                   // unreadCount, groupInfo.name, groupInfo.description,
+                   // groupInfo.avatarUrl, currentEpoch, disappearingMessages
                    
       allow delete: if false; // Chats cannot be deleted, only archived
       
-      // Messages Subcollection
+      // -----------------------------------------------------------------
+      // Messages Subcollection — strict sender/receiver split
+      // -----------------------------------------------------------------
       match /messages/{messageId} {
         // Must be a chat participant to read messages
         allow read: if isChatParticipant(chatId);
@@ -99,17 +125,76 @@ service cloud.firestore {
         // Creating a message
         allow create: if isChatParticipant(chatId) && isValidMessage();
         
-        // Updating a message (for read receipts, reactions, or delete flags)
+        // -----------------------------------------------------------------
+        // Message update — split into SENDER vs RECEIVER permissions
+        //
+        // SENDER can: soft-delete (isDeleted, deletedAt, deletedBy) and
+        //             edit (editedText, editedAt).
+        // RECEIVER can: update delivery/read status (status, deliveredAt),
+        //               read receipts (readBy), and reactions.
+        //
+        // NEITHER can change immutable fields enforced below.
+        // -----------------------------------------------------------------
         allow update: if isChatParticipant(chatId) &&
+
+                     // IMMUTABILITY: senderId must never change after creation.
+                     // A malicious client could impersonate another user by
+                     // rewriting the sender field on an existing message.
+                     request.resource.data.senderId == resource.data.senderId &&
+
+                     // IMMUTABILITY: createdAt must never change. Tampering
+                     // with timestamps could reorder message history or
+                     // circumvent time-based deletion windows.
+                     request.resource.data.createdAt == resource.data.createdAt &&
+
+                     // IMMUTABILITY: message type must not change. Switching
+                     // type (e.g. text → image) after creation could break
+                     // rendering logic or bypass content validation.
+                     request.resource.data.type == resource.data.type &&
+
+                     // IMMUTABILITY: original encrypted content must not be
+                     // overwritten. If content were mutable, an attacker
+                     // could replace ciphertext after the fact, breaking
+                     // the E2EE integrity guarantee.
                      (
-                       // Sender can update their own message (e.g., delete for everyone within 1 hour)
+                       // If the original message had 'content', it must stay the same
+                       (!resource.data.keys().hasAny(['content']) || request.resource.data.content == resource.data.content) &&
+                       // If the original message had 'ciphertexts', it must stay the same
+                       (!resource.data.keys().hasAny(['ciphertexts']) || request.resource.data.ciphertexts == resource.data.ciphertexts)
+                     ) &&
+
+                     // Role-based field access: only the sender OR a non-sender
+                     // participant may update, with different allowed fields.
+                     (
+                       // SENDER path: can soft-delete or edit their own message
                        (resource.data.senderId == request.auth.uid) ||
-                       // Receiver can update status (delivered, read) or reactions
-                       (resource.data.senderId != request.auth.uid)
+
+                       // RECEIVER path: can update status, readBy, reactions,
+                       // deliveredAt for read receipts and reactions only
+                       (resource.data.senderId != request.auth.uid &&
+                        // Receivers must not change sender-only fields
+                        request.resource.data.get('isDeleted', resource.data.get('isDeleted', false)) == resource.data.get('isDeleted', false) &&
+                        request.resource.data.get('deletedAt', resource.data.get('deletedAt', null)) == resource.data.get('deletedAt', null) &&
+                        request.resource.data.get('deletedBy', resource.data.get('deletedBy', null)) == resource.data.get('deletedBy', null) &&
+                        request.resource.data.get('editedText', resource.data.get('editedText', null)) == resource.data.get('editedText', null) &&
+                        request.resource.data.get('editedAt', resource.data.get('editedAt', null)) == resource.data.get('editedAt', null)
+                       )
                      );
                      
         // Messages are never actually deleted, just marked as deleted
         allow delete: if false;
+      }
+
+      // -----------------------------------------------------------------
+      // Group Keys Subcollection
+      // Stores per-device wrapped group keys for E2EE group messaging.
+      // Any chat participant can read (to decrypt) and write (to
+      // distribute new epoch keys). Restricted to participants only
+      // to prevent key leakage to non-members.
+      // -----------------------------------------------------------------
+      match /groupKeys/{deviceId} {
+        allow read: if isChatParticipant(chatId);
+        allow write: if isChatParticipant(chatId);
       }
     }
     

@@ -29,6 +29,7 @@ export default function ChatList() {
   const [chats, setChats] = useState<ChatPreview[]>([]);
   const [loading, setLoading] = useState(true);
   const [userNames, setUserNames] = useState<Record<string, string>>({});
+  const [userOnline, setUserOnline] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!user) return;
@@ -58,16 +59,19 @@ export default function ChatList() {
 
       // Fetch missing user names
       if (userIdsToFetch.size > 0) {
-        const newNames: Record<string, string> = { ...userNames };
-        await Promise.all(
+        Promise.all(
           Array.from(userIdsToFetch).map(async (uid) => {
             const userSnap = await getDoc(doc(db, 'users', uid));
             if (userSnap.exists()) {
-              newNames[uid] = userSnap.data().displayName || `User ${uid.substring(0, 4)}`;
+              const name = userSnap.data().displayName || `User ${uid.substring(0, 4)}`;
+              const isOnline = userSnap.data().isOnline === true;
+              
+              // Use functional updater to avoid stale closure
+              setUserNames(prev => ({ ...prev, [uid]: name }));
+              setUserOnline(prev => ({ ...prev, [uid]: isOnline }));
             }
           })
         );
-        setUserNames(newNames);
       }
 
       setChats(chatData);
@@ -110,13 +114,15 @@ export default function ChatList() {
         const isGroup = chat.type === 'group';
         const unread = chat.unreadCount?.[user?.uid || ''] || 0;
 
-        // Determine display name
+        // Determine display name and online status
         let displayName = 'Chat';
+        let isOnline = false;
         if (isGroup) {
           displayName = chat.groupInfo?.name || 'Group Chat';
         } else {
           const otherId = chat.participants.find((id) => id !== user?.uid);
           displayName = (otherId && userNames[otherId]) || `User ${(otherId || '').substring(0, 6)}`;
+          isOnline = otherId ? !!userOnline[otherId] : false;
         }
 
         // Formatting timestamp
@@ -155,19 +161,25 @@ export default function ChatList() {
             className="flex items-center px-4 py-3 hover:bg-[var(--surface)] transition-colors border-b border-[var(--border)] cursor-pointer"
           >
             {/* Avatar */}
-            {isGroup ? (
-              chat.groupInfo?.avatarUrl ? (
-                <img src={chat.groupInfo.avatarUrl} alt="" className="w-12 h-12 rounded-full flex-shrink-0 object-cover" />
+            <div className="relative flex-shrink-0">
+              {isGroup ? (
+                chat.groupInfo?.avatarUrl ? (
+                  <img src={chat.groupInfo.avatarUrl} alt="" className="w-12 h-12 rounded-full object-cover" />
+                ) : (
+                  <div className="w-12 h-12 rounded-full bg-gradient-to-br from-green-400 to-teal-500 flex items-center justify-center text-white font-medium">
+                    {displayName.substring(0, 2).toUpperCase()}
+                  </div>
+                )
               ) : (
-                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-green-400 to-teal-500 flex-shrink-0 flex items-center justify-center text-white font-medium">
+                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white font-medium">
                   {displayName.substring(0, 2).toUpperCase()}
                 </div>
-              )
-            ) : (
-              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex-shrink-0 flex items-center justify-center text-white font-medium">
-                {displayName.substring(0, 2).toUpperCase()}
-              </div>
-            )}
+              )}
+              
+              {!isGroup && isOnline && (
+                <span className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-green-500 border-2 border-[var(--surface)] rounded-full"></span>
+              )}
+            </div>
 
             <div className="ml-3 flex-1 overflow-hidden">
               <div className="flex justify-between items-baseline mb-1">

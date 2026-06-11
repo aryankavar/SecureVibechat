@@ -8,10 +8,9 @@ service firebase.storage {
 
     // Chat file uploads (images, documents, videos, voice messages)
     match /chats/{chatId}/files/{fileName} {
-      // Anyone authenticated can read chat files
-      // (Firestore rules handle participant-level access; Storage doesn't have
-      //  direct access to Firestore docs, so we rely on signed URLs or auth)
-      allow read: if isAuthenticated();
+      // Allow downloading if you know the exact URL, but block listing directories
+      allow get: if isAuthenticated();
+      allow list: if false;
       
       // Only authenticated users can upload, with size limit
       allow write: if isAuthenticated()
@@ -29,7 +28,8 @@ service firebase.storage {
 
     // User avatars
     match /users/{userId}/avatar/{fileName} {
-      allow read: if isAuthenticated();
+      allow get: if isAuthenticated();
+      allow list: if false;
       allow write: if isAuthenticated()
                    && request.auth.uid == userId
                    && request.resource.size < 5 * 1024 * 1024  // 5MB max
@@ -38,7 +38,8 @@ service firebase.storage {
 
     // Group avatars
     match /groups/{chatId}/avatar/{fileName} {
-      allow read: if isAuthenticated();
+      allow get: if isAuthenticated();
+      allow list: if false;
       allow write: if isAuthenticated()
                    && request.resource.size < 5 * 1024 * 1024
                    && request.resource.contentType.matches('image/.*');

@@ -7,6 +7,34 @@ export { createGroup, addGroupMember, removeGroupMember, updateGroupInfo } from 
 admin.initializeApp();
 const db = admin.firestore();
 
+// SECURITY: Shared admin-verification helper for HTTP endpoints.
+// Extracts Bearer token, verifies it with Firebase Auth, then checks
+// that the caller has a document in the `admins/{uid}` collection.
+async function verifyAdmin(
+  req: functions.https.Request,
+  res: functions.Response
+): Promise<boolean> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(403).json({ error: 'Unauthorized' });
+    return false;
+  }
+
+  const token = authHeader.split('Bearer ')[1];
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    const adminDoc = await db.collection('admins').doc(decoded.uid).get();
+    if (!adminDoc.exists) {
+      res.status(403).json({ error: 'Unauthorized' });
+      return false;
+    }
+    return true;
+  } catch {
+    res.status(403).json({ error: 'Unauthorized' });
+    return false;
+  }
+}
+
 // -----------------------------------------------------------------------------
 // USER TRIGGERS
 // -----------------------------------------------------------------------------
@@ -239,7 +267,10 @@ export const searchUsers = functions.https.onCall(async (data, context) => {
   return { users };
 });
 
+// SECURITY: auth-gated — requires valid Firebase ID token + admin role
 export const backfillUsers = functions.https.onRequest(async (req, res) => {
+  if (!(await verifyAdmin(req, res))) return;
+
   try {
     const snapshot = await db.collection('users').get();
     let count = 0;
@@ -273,7 +304,10 @@ export const backfillUsers = functions.https.onRequest(async (req, res) => {
   }
 });
 
+// SECURITY: auth-gated — requires valid Firebase ID token + admin role
 export const debugSearchUsers = functions.https.onRequest(async (req, res) => {
+  if (!(await verifyAdmin(req, res))) return;
+
   try {
     const query = (req.query.q as string || '').toLowerCase().trim();
     const endQuery = query + '\uf8ff';
@@ -306,4 +340,61 @@ export const debugSearchUsers = functions.https.onRequest(async (req, res) => {
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message, stack: error.stack });
   }
+});
+
+// -----------------------------------------------------------------------------
+// SCHEDULED TASKS
+// -----------------------------------------------------------------------------
+
+/**
+ * Scheduled function to delete disappearing messages.
+ * Runs every hour to clean up messages older than the chat's disappearingSetting.
+ */
+export const cleanupDisappearingMessages = functions.pubsub.schedule('every 1 hours').onRun(async (context) => {
+  console.log('Running cleanupDisappearingMessages...');
+  const now = Date.now();
+  
+  // Settings map (in milliseconds)
+  const retentionMs: Record<string, number> = {
+    '1hr': 60 * 60 * 1000,
+    '24hr': 24 * 60 * 60 * 1000,
+    '7days': 7 * 24 * 60 * 60 * 1000,
+  };
+
+  try {
+    // We query for chats that have a disappearingSetting set and it's not 'off'
+    const chatsSnapshot = await db.collection('chats')
+      .where('disappearingSetting', 'in', ['1hr', '24hr', '7days'])
+      .get();
+
+    let deletedCount = 0;
+
+    for (const chatDoc of chatsSnapshot.docs) {
+      const setting = chatDoc.data().disappearingSetting;
+      const ms = retentionMs[setting];
+      
+      if (!ms) continue;
+      
+      const cutoffTime = new Date(now - ms);
+      const cutoffTimestamp = admin.firestore.Timestamp.fromDate(cutoffTime);
+
+      const messagesSnapshot = await chatDoc.ref.collection('messages')
+        .where('createdAt', '<', cutoffTimestamp)
+        .get();
+
+      if (!messagesSnapshot.empty) {
+        const batch = db.batch();
+        messagesSnapshot.docs.forEach((msgDoc) => {
+          batch.delete(msgDoc.ref);
+          deletedCount++;
+        });
+        
+        await batch.commit();
+      }
+    }
+    console.log(`Cleaned up ${deletedCount} disappearing messages.`);
+  } catch (error) {
+    console.error('Error cleaning up disappearing messages:', error);
+  }
+  return null;
 });

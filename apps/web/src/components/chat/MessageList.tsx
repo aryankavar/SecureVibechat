@@ -171,11 +171,13 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
       limit(100)
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const groupKeysCache: Record<number, Uint8Array> = {};
+
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
       const msgList: Message[] = [];
       const unreadMessageIds: string[] = [];
 
-      snapshot.forEach((docSnap) => {
+      for (const docSnap of snapshot.docs) {
         const data = docSnap.data();
         
         // Handle disappearing messages
@@ -222,9 +224,21 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
         if (data.type === 'system') {
           decryptedText = data.systemText || 'System message';
         } else if (isGroup && data.content?.ciphertext) {
-           // MVP Group: Just decrypt using a dummy shared key or we stored group key
            try {
-             decryptedText = decryptMessage(data.content, new Uint8Array(32));
+             let keyToUse = new Uint8Array(32); // fallback to zero-key for older messages
+             if (data.epoch) {
+               if (groupKeysCache[data.epoch]) {
+                 keyToUse = groupKeysCache[data.epoch];
+               } else {
+                 const { getGroupKeyForEpoch } = await import('@/services/groupService');
+                 const realKey = await getGroupKeyForEpoch(chatId, data.epoch);
+                 if (realKey) {
+                   groupKeysCache[data.epoch] = realKey;
+                   keyToUse = realKey;
+                 }
+               }
+             }
+             decryptedText = decryptMessage(data.content, keyToUse);
            } catch (e) {
              decryptedText = "🔒 Error decrypting group message";
              isDecryptionError = true;
@@ -249,17 +263,18 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
           decryptedText = `[Unsupported message type or not encrypted for this device]`;
         }
 
-        if (data.senderId !== user.uid && data.status !== 'read') {
-          unreadMessageIds.push(docSnap.id);
-        }
-
         msgList.push({
           id: docSnap.id,
           ...data,
           decryptedText,
-          isDecryptionError
+          isDecryptionError,
         } as Message);
-      });
+        
+        // Track unread messages not sent by me
+        if (data.senderId !== user.uid && data.status !== 'read' && !data.readBy?.includes(user.uid)) {
+          unreadMessageIds.push(docSnap.id);
+        }
+      } // end for loop
 
       setMessages(msgList);
 

@@ -94,10 +94,18 @@ export default function MessageInput({ chatId, recipientDevices = {}, myDevices 
     try {
       let ciphertextsMap: Record<string, any> = {};
       let singleContent: any = null;
+      let groupEpoch: number | undefined;
 
       if (isGroup) {
-        // MVP Group: Just encrypt using a dummy shared key or stored group key
-        singleContent = encryptMessage(contentPayload, new Uint8Array(32));
+        const { getCurrentGroupKey } = await import('@/services/groupService');
+        const groupKeyData = await getCurrentGroupKey(chatId);
+        if (!groupKeyData) {
+          console.warn("No group key available. Cannot encrypt group message.");
+          setIsSending(false);
+          return;
+        }
+        singleContent = encryptMessage(contentPayload, groupKeyData.key);
+        groupEpoch = groupKeyData.epoch;
       } else {
         let myDeviceId = localStorage.getItem(`deviceId_${user.uid}`);
         let myPrivateKey: string | null = null;
@@ -119,6 +127,7 @@ export default function MessageInput({ chatId, recipientDevices = {}, myDevices 
 
       await addDoc(collection(db, `chats/${chatId}/messages`), {
         ...(singleContent ? { content: singleContent } : { ciphertexts: ciphertextsMap }),
+        ...(groupEpoch ? { epoch: groupEpoch } : {}),
         senderId: user.uid,
         type,
         status: 'sent',

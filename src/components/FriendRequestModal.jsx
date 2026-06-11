@@ -10,35 +10,48 @@ function FriendRequestModal({ user, onClose }) {
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    if (searchQuery.trim().length >= 2) {
-      handleSearch()
-    } else {
-      setSearchResults([])
-    }
-  }, [searchQuery])
+    let timeoutId;
+    let isCancelled = false;
 
-  const handleSearch = async () => {
-    setLoading(true)
-    try {
-      const results = await searchUsers(searchQuery, user.uid)
-      
-      // Check friendship status for each result
-      const resultsWithStatus = await Promise.all(
-        results.map(async (result) => {
-          const isFriend = await checkIfFriends(user.uid, result.id)
-          const requestSent = await checkIfRequestSent(user.uid, result.id)
-          return { ...result, isFriend, requestSent }
-        })
-      )
-      
-      setSearchResults(resultsWithStatus)
-    } catch (error) {
-      console.error('Search error:', error)
-      setMessage('Search failed. Please try again.')
-    } finally {
-      setLoading(false)
+    const performSearch = async () => {
+      setLoading(true);
+      try {
+        const results = await searchUsers(searchQuery, user.uid);
+        if (isCancelled) return;
+
+        // Check friendship status for each result
+        const resultsWithStatus = await Promise.all(
+          results.map(async (result) => {
+            const isFriend = await checkIfFriends(user.uid, result.id);
+            const requestSent = await checkIfRequestSent(user.uid, result.id);
+            return { ...result, isFriend, requestSent };
+          })
+        );
+        
+        if (isCancelled) return;
+        setSearchResults(resultsWithStatus);
+      } catch (error) {
+        if (isCancelled) return;
+        console.error('Search error:', error);
+        setMessage('Search failed. Please try again.');
+      } finally {
+        if (!isCancelled) setLoading(false);
+      }
+    };
+
+    if (searchQuery.trim().length >= 2) {
+      timeoutId = setTimeout(() => {
+        performSearch();
+      }, 500); // 500ms debounce
+    } else {
+      setSearchResults([]);
     }
-  }
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      isCancelled = true;
+    };
+  }, [searchQuery, user.uid]);
 
   const handleSendRequest = async (receiverId, receiverName) => {
     setSending({ ...sending, [receiverId]: true })

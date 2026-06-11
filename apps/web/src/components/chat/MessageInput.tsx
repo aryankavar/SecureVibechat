@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { db } from '@/lib/firebase';
 import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { useAuthStore } from '@/lib/stores/authStore';
-import { encryptForMultipleDevices, encryptMessage, deriveSharedKey, generateKeyPair } from '@securevibechat/shared';
+import { encryptMessage, encryptForMultipleDevices, getLibsodiumPrivateKey } from '@securevibechat/shared';
 import { useTypingIndicator } from '@/hooks/useTypingIndicator';
 import dynamic from 'next/dynamic';
 import type { EmojiClickData } from 'emoji-picker-react';
@@ -19,16 +19,29 @@ const EmojiPicker = dynamic(() => import('emoji-picker-react'), { ssr: false });
 interface MessageInputProps {
   chatId: string;
   recipientDevices?: Record<string, string>;
+  editingMessage?: any;
+  onCancelEdit?: () => void;
   myDevices?: Record<string, string>;
   recipientId?: string | null;
   isGroup?: boolean;
+  replyingTo?: any;
+  onCancelReply?: () => void;
 }
 
 import { createPortal } from 'react-dom';
 
-export default function MessageInput({ chatId, recipientDevices = {}, myDevices = {}, recipientId, isGroup }: MessageInputProps) {
+export default function MessageInput({ chatId, recipientDevices = {}, myDevices = {}, recipientId, isGroup, editingMessage, onCancelEdit, replyingTo, onCancelReply }: MessageInputProps) {
   const [text, setText] = useState('');
   const [isSending, setIsSending] = useState(false);
+
+  useEffect(() => {
+    if (editingMessage && editingMessage.type === 'text') {
+      setText(editingMessage.decryptedText || '');
+    } else {
+      setText('');
+    }
+  }, [editingMessage]);
+
   
   // Popover states
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -83,10 +96,14 @@ export default function MessageInput({ chatId, recipientDevices = {}, myDevices 
       let singleContent: any = null;
 
       if (isGroup) {
-        // Group fallback: Currently just plaintext wrapper (MVP)
-        singleContent = encryptMessage(contentPayload, new Uint8Array(32)); 
+        // MVP Group: Just encrypt using a dummy shared key or stored group key
+        singleContent = encryptMessage(contentPayload, new Uint8Array(32));
       } else {
-        let myPrivateKey = localStorage.getItem(`privateKey_${user.uid}`);
+        let myDeviceId = localStorage.getItem(`deviceId_${user.uid}`);
+        let myPrivateKey: string | null = null;
+        if (myDeviceId) {
+          myPrivateKey = await getLibsodiumPrivateKey(myDeviceId);
+        }
         let myPublicKey = localStorage.getItem(`publicKey_${user.uid}`);
         if (!myPrivateKey || !myPublicKey) {
           console.warn("Private/Public key missing. Cannot encrypt.");
@@ -106,8 +123,10 @@ export default function MessageInput({ chatId, recipientDevices = {}, myDevices 
         type,
         status: 'sent',
         createdAt: serverTimestamp(),
+        ...(replyingTo ? { replyToId: replyingTo.id } : {}),
         ...additionalData
       });
+      onCancelReply?.();
     } catch (error) {
       console.error(`Error sending ${type} message:`, error);
       alert(`Failed to send ${type} message.`);
@@ -146,6 +165,36 @@ export default function MessageInput({ chatId, recipientDevices = {}, myDevices 
   return (
     <div className="relative p-4 glass-panel border-t border-[var(--border)] z-10 w-full bg-transparent">
       
+      
+      {editingMessage && (
+        <div className="absolute -top-10 left-0 w-full bg-gray-100 dark:bg-gray-800 text-sm px-4 py-2 flex justify-between items-center rounded-t-xl border border-b-0 border-[var(--border)]">
+          <div className="flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 text-blue-500"><path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125" /></svg>
+            <span className="font-medium text-gray-700 dark:text-gray-300">Editing Message</span>
+          </div>
+          <button onClick={() => { onCancelEdit?.(); setText(''); }} className="text-gray-500 hover:text-gray-800 dark:hover:text-gray-200">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+      )}
+
+      {replyingTo && !editingMessage && (
+        <div className="absolute -top-14 left-0 w-full bg-gray-100 dark:bg-gray-800 text-sm px-4 py-2 flex justify-between items-center rounded-t-xl border border-b-0 border-[var(--border)]">
+          <div className="flex flex-col flex-1 overflow-hidden">
+            <div className="flex items-center gap-2 mb-0.5">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 text-blue-500"><path strokeLinecap="round" strokeLinejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" /></svg>
+              <span className="font-medium text-blue-500">Replying to message</span>
+            </div>
+            <div className="text-gray-600 dark:text-gray-400 line-clamp-1 text-xs">
+              {replyingTo.type === 'text' ? replyingTo.decryptedText : 'Media'}
+            </div>
+          </div>
+          <button onClick={() => onCancelReply?.()} className="text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 ml-4">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+        </div>
+      )}
+
       {/* File Uploader Modal */}
       {showFileUploader && typeof document !== 'undefined' && createPortal(
         <FileUploader 

@@ -1,14 +1,26 @@
 import { db, auth } from '../lib/firebase';
 import { doc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { initEncryption, generateKeyPair } from '@securevibechat/shared';
+import { initEncryption, generateKeyPair, storeLibsodiumPrivateKey, getLibsodiumPrivateKey } from '@securevibechat/shared';
 
 export const registerDevice = async (userUid: string): Promise<{ deviceId: string; publicKey: string; privateKey: string }> => {
   await initEncryption();
   
-  // Check if we already have a device registered in localStorage
   let deviceId = localStorage.getItem(`deviceId_${userUid}`);
-  let privateKey = localStorage.getItem(`privateKey_${userUid}`);
   let publicKey = localStorage.getItem(`publicKey_${userUid}`);
+  let privateKey: string | null = null;
+  
+  if (deviceId) {
+    privateKey = await getLibsodiumPrivateKey(deviceId);
+    if (!privateKey) {
+      // Check localStorage for migration
+      const legacyPrivateKey = localStorage.getItem(`privateKey_${userUid}`);
+      if (legacyPrivateKey) {
+        await storeLibsodiumPrivateKey(deviceId, legacyPrivateKey);
+        localStorage.removeItem(`privateKey_${userUid}`);
+        privateKey = legacyPrivateKey;
+      }
+    }
+  }
 
   if (!deviceId || !privateKey || !publicKey) {
     // Generate new device identity
@@ -20,8 +32,8 @@ export const registerDevice = async (userUid: string): Promise<{ deviceId: strin
     // Save locally
     if (deviceId && privateKey && publicKey) {
       localStorage.setItem(`deviceId_${userUid}`, deviceId);
-      localStorage.setItem(`privateKey_${userUid}`, privateKey);
       localStorage.setItem(`publicKey_${userUid}`, publicKey);
+      await storeLibsodiumPrivateKey(deviceId, privateKey);
     }
   }
 
@@ -124,8 +136,8 @@ export const restoreDeviceWithPIN = async (uid: string, pin: string): Promise<bo
       throw new Error('WRONG_PIN');
     }
 
-    // Store the restored key locally
-    localStorage.setItem(`privateKey_${uid}`, restoredKey);
+    // Store the restored key securely
+    await storeLibsodiumPrivateKey(deviceId, restoredKey);
     return true;
   } catch (e: any) {
     if (e.message === 'WRONG_PIN') throw e;
@@ -147,3 +159,14 @@ export const updateUserTheme = async (theme: any) => {
     localStorage.setItem(`theme_${user.uid}`, JSON.stringify(theme));
   }
 };
+
+export async function migrateKeysFromLocalStorage(userUid: string): Promise<void> {
+  const deviceId = localStorage.getItem(`deviceId_${userUid}`);
+  if (deviceId) {
+    const legacyPrivateKey = localStorage.getItem(`privateKey_${userUid}`);
+    if (legacyPrivateKey) {
+      await storeLibsodiumPrivateKey(deviceId, legacyPrivateKey);
+      localStorage.removeItem(`privateKey_${userUid}`);
+    }
+  }
+}

@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { db } from '@/lib/firebase';
 import { collection, query, orderBy, onSnapshot, limit, doc, writeBatch, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { useAuthStore } from '@/lib/stores/authStore';
-import { decryptMessage, deriveSharedKey, generateKeyPair } from "@securevibechat/shared";
+import { decryptMessage, deriveSharedKey, generateKeyPair, getLibsodiumPrivateKey, storeLibsodiumPrivateKey } from "@securevibechat/shared";
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import { useRecipientTyping } from '@/hooks/useTypingIndicator';
 import MessageContextMenu from './MessageContextMenu';
@@ -135,21 +135,30 @@ export default function MessageList({ chatId, recipientDevices = {}, myDevices =
   // Load private key and device ID
   useEffect(() => {
     if (!user) return;
-    let pk = localStorage.getItem(`privateKey_${user.uid}`);
-    let dId = localStorage.getItem(`deviceId_${user.uid}`);
-    
-    if (!pk || !dId) {
-      console.warn("Private key or Device ID missing. Trying to regenerate keys...");
-      const newKeys = generateKeyPair();
-      pk = newKeys.privateKey;
-      dId = crypto.randomUUID();
-      localStorage.setItem(`privateKey_${user.uid}`, pk);
-      localStorage.setItem(`deviceId_${user.uid}`, dId);
-      // We rely on AuthProvider/userService to actually register this new device if it happens
-    }
-    
-    setMyPrivateKey(pk);
-    setMyDeviceId(dId);
+
+    const loadKeys = async () => {
+      let dId = localStorage.getItem(`deviceId_${user.uid}`);
+      let pk: string | null = null;
+
+      if (dId) {
+        pk = await getLibsodiumPrivateKey(dId);
+      }
+      
+      if (!pk || !dId) {
+        console.warn("Private key or Device ID missing. Trying to regenerate keys...");
+        const newKeys = generateKeyPair();
+        pk = newKeys.privateKey;
+        dId = crypto.randomUUID();
+        localStorage.setItem(`deviceId_${user.uid}`, dId);
+        await storeLibsodiumPrivateKey(dId, pk);
+        // We rely on AuthProvider/userService to actually register this new device if it happens
+      }
+      
+      setMyPrivateKey(pk);
+      setMyDeviceId(dId);
+    };
+
+    loadKeys();
   }, [user]);
 
   // Fetch and decrypt messages + mark unread as read

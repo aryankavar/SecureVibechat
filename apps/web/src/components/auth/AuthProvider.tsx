@@ -5,11 +5,14 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { useAuthStore, UserProfile } from '@/lib/stores/authStore';
 import { checkUserProfile } from '@/services/authService';
-import { registerDevice } from '@/services/userService';
+import { registerDevice, migrateKeysFromLocalStorage } from '@/services/userService';
 import { initEncryption } from '@securevibechat/shared';
+import { usePresence } from '@/hooks/usePresence';
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const { setUser, setProfile, setLoading } = useAuthStore();
+  const { user, setUser, setProfile, setLoading } = useAuthStore();
+
+  usePresence(user?.uid);
 
   useEffect(() => {
     // Initialize libsodium for the entire app
@@ -22,6 +25,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Fetch extended profile from Firestore
         const profileData = await checkUserProfile(firebaseUser.uid);
         if (profileData) {
+          // Migrate any legacy keys before registering
+          await migrateKeysFromLocalStorage(firebaseUser.uid);
           // Register the current device (creates or loads keys, registers with Firestore)
           await registerDevice(firebaseUser.uid);
           setProfile(profileData as UserProfile);
